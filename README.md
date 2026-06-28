@@ -41,7 +41,7 @@ flowchart TD
 Once initialized, it serves an interactive web interface powered by Leaflet.js where users can:
 - Visually inspect Big Clusters and Nano Clusters.
 - Dynamically draw optimal paths (TSP approximations) linking cluster centers.
-- Manually edit sequence numbers and Region/Zone assignments for individual sites or entire clusters.
+- Dynamically customize and adjust sequence numbers and Region/Zone assignments on the fly based on specific engineering requirements.
 - Automatically save progress into a persistent backend state via background API calls.
 
 ## Key Features
