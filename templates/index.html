@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Interactive 5G Clustering Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
+    <style>
+        body { margin: 0; padding: 0; font-family: Arial, sans-serif; }
+        #map { width: 100%; height: 100vh; }
+        #toolbar {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        button {
+            display: block;
+            width: 100%;
+            margin-bottom: 10px;
+            padding: 10px;
+            background-color: #2c3e50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover { background-color: #34495e; }
+        .export-btn { background-color: #27ae60; }
+        .export-btn:hover { background-color: #2ecc71; }
+        .seq-icon {
+            font-size: 8pt; color: white; border-radius: 4px; width: 22px; height: 16px; 
+            text-align: center; line-height: 16px; border: 1px solid white; font-weight: bold;
+            cursor: pointer;
+        }
+        .leaflet-editing-icon {
+            background-color: black !important;
+            border: 2px solid white !important;
+            border-radius: 50% !important;
+        }
+        #bulkEditBanner {
+            display: none; position: fixed; top: 20px; left: 50%; transform: translateX(-50%); 
+            background: #f1c40f; color: #2c3e50; padding: 15px; z-index: 2000; 
+            font-weight: bold; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+            text-align: center;
+        }
+        #bulkEditBanner button {
+            display: inline-block; width: auto; margin: 0 5px; padding: 5px 10px;
+            background-color: #34495e; font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div id="bulkEditBanner">
+        Polygon drawn (<span id="bulkCount">0</span> sites). Click any site on the map to copy its clusters!<br><br>
+        <button onclick="promptManualBulkEdit()">Type Manually</button>
+        <button onclick="cancelBulkEdit()" style="background-color: #e74c3c;">Cancel</button>
+    </div>
+
+    <div id="toolbar">
+        <h3>Map Controls</h3>
+        <button id="toggleColorBtn">Color: Big Cluster</button>
+        <button id="togglePathBtn">Path: Big Sequence</button>
+        <button id="exportBtn" class="export-btn">Export Revised Data</button>
+        <button id="resetBtn" style="background-color: #e74c3c;">Reset Progress</button>
+        <div id="statusMsg" style="font-size: 12px; color: green; margin-top: 10px;"></div>
+    </div>
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+    <script>
+        var map = L.map('map').setView([-6.2, 106.8], 10);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+        }).addTo(map);
+
+        map.createPane('pathsPane');
+        map.getPane('pathsPane').style.zIndex = 600;
+        
+        map.createPane('labelsPane');
+        map.getPane('labelsPane').style.zIndex = 650;
+
+        var sitesLayer = L.layerGroup().addTo(map);
+        var pathsLayer = L.layerGroup().addTo(map);
+
+        var drawnItems = new L.FeatureGroup();
+        map.addLayer(drawnItems);
+        var drawControl = new L.Control.Draw({
+            edit: { featureGroup: drawnItems },
+            draw: { marker: false, circlemarker: false, circle: false, polyline: false }
+        });
+        map.addControl(drawControl);
+
+        var siteData = [];
+        var bigPaths = [];
+        var nanoPaths = [];
+        var zoneColors = {};
+        var fallbackColors = {};
+        var nanoColors = {};
+        
+        var colorMode = "cluster"; 
+        var pathMode = "big"; 
+        
+        var pendingBulkSites = null;
+        
+        function refreshFromServer() {
+            fetch('/data').then(r => r.json()).then(data => {
+                siteData = data.sites;
+                zoneColors = data.zone_colors;
+                fallbackColors = data.fallback_colors;
+                nanoColors = data.nano_colors;
+                bigPaths = data.big_paths;
+                nanoPaths = data.nano_paths;
+                
+                drawSites();
+            });
+        }
+
+        refreshFromServer();
+        
+        function autosaveAndRefresh(payload) {
+            fetch('/autosave', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            }).then(() => refreshFromServer());
+        }
+
+        document.getElementById('exportBtn').addEventListener('click', function() {
+            document.getElementById('statusMsg').innerText = "Exporting... this may take 10-20 seconds...";
+            fetch('/export', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({})
+            }).then(r => r.json()).then(data => {
+                if (data.status === "success") {
+                    document.getElementById('statusMsg').innerText = "Export complete! Check the 'Revised' folder.";
+                    setTimeout(() => { document.getElementById('statusMsg').innerText = ""; }, 5000);
+                } else {
+                    alert("Error exporting: " + data.message);
+                }
+            }).catch(e => alert("Error: " + e));
+        });
+
+        document.getElementById('resetBtn').addEventListener('click', function() {
+            if (confirm("Are you sure you want to reset ALL progress back to the original CSV state? This cannot be undone.")) {
+                document.getElementById('statusMsg').innerText = "Resetting and Re-clustering...";
+                fetch('/reset', { method: 'POST' }).then(() => {
+                    refreshFromServer();
+                    document.getElementById('statusMsg').innerText = "Progress reset!";
+                    setTimeout(() => { document.getElementById('statusMsg').innerText = ""; }, 5000);
+                });
+            }
+        });
+        
+        function getRandomColor() {
+            var letters = '0123456789ABCDEF';
+            var color = '#';
+            for (var i = 0; i < 6; i++) { color += letters[Math.floor(Math.random() * 16)]; }
+            return color;
+        }
+
+        function applyEdit(site, field, newValue) {
+            var edits = {};
+            edits[field] = newValue.trim();
+            if (field === 'nano_cluster_id' && newValue.includes('_N')) {
+                edits['big_cluster_id'] = newValue.split('_N')[0];
+            }
+            autosaveAndRefresh({site_edits: {[site.SITE_ID]: edits}});
+        }
+
+        map.on(L.Draw.Event.CREATED, function (e) {
+            var layer = e.layer;
+            drawnItems.addLayer(layer);
+            
+            var latlngs = layer.getLatLngs()[0];
+            var coords = latlngs.map(ll => [ll.lng, ll.lat]);
+            coords.push([latlngs[0].lng, latlngs[0].lat]); 
+            var searchPoly = turf.polygon([coords]);
+            
+            var points = turf.featureCollection(siteData.map(s => turf.point([s.LONGITUDE, s.LATITUDE], {SITE_ID: s.SITE_ID})));
+            var ptsWithin = turf.pointsWithinPolygon(points, searchPoly);
+            var selectedIds = ptsWithin.features.map(f => f.properties.SITE_ID);
+            
+            if (selectedIds.length > 0) {
+                pendingBulkSites = selectedIds;
+                document.getElementById('bulkCount').innerText = selectedIds.length;
+                document.getElementById('bulkEditBanner').style.display = 'block';
+                drawSites(); 
+            } else {
+                alert("No sites found inside that shape.");
+            }
+            drawnItems.removeLayer(layer);
+        });
+
+        window.cancelBulkEdit = function() {
+            pendingBulkSites = null;
+            document.getElementById('bulkEditBanner').style.display = 'none';
+            drawSites();
+        };
+
+        window.promptManualBulkEdit = function() {
+            var fieldChoice = prompt(`Which field do you want to manually edit?\n1 = ZONE\n2 = Big Cluster\n3 = Nano Cluster`, "3");
+            if (fieldChoice) {
+                var field = fieldChoice === "1" ? "ZONE" : fieldChoice === "3" ? "nano_cluster_id" : "big_cluster_id";
+                var newValue = prompt(`Enter new value for ${field} (Applies to all ${pendingBulkSites.length} selected sites):`);
+                if (newValue !== null && newValue.trim() !== "") {
+                    var site_edits = {};
+                    pendingBulkSites.forEach(sid => {
+                        site_edits[sid] = {[field]: newValue.trim()};
+                        if (field === 'nano_cluster_id' && newValue.includes('_N')) {
+                            site_edits[sid]['big_cluster_id'] = newValue.split('_N')[0];
+                        }
+                    });
+                    
+                    fetch('/autosave', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({site_edits: site_edits})
+                    }).then(() => {
+                        alert(`Successfully updated ${pendingBulkSites.length} sites!`);
+                        cancelBulkEdit();
+                        refreshFromServer();
+                    });
+                }
+            }
+        };
+
+        function getColor(row) {
+            if (colorMode === "zone" && row.REGION.toUpperCase() === 'JABO' && zoneColors[row.ZONE]) {
+                return zoneColors[row.ZONE];
+            } else if (colorMode === "nano") {
+                return nanoColors[row.nano_cluster_id] || "gray";
+            }
+            return fallbackColors[row.big_cluster_id] || "gray";
+        }
+
+        window.editSite = function(siteId, field, currentValue) {
+            var newValue = prompt(`Enter new value for ${field} (Site: ${siteId}):`, currentValue);
+            if (newValue !== null && newValue.trim() !== "") {
+                var site = siteData.find(s => s.SITE_ID === siteId);
+                if (site) {
+                    applyEdit(site, field, newValue);
+                    drawSites(); 
+                }
+            }
+        };
+
+        window.editEntireCluster = function(field, oldClusterId) {
+            var newValue = prompt(`Mass Edit Entire Cluster!\nRename ${field}: '${oldClusterId}' to:`, oldClusterId);
+            if (newValue !== null && newValue.trim() !== "") {
+                var site_edits = {};
+                var count = 0;
+                siteData.forEach(site => {
+                    if (site[field] === oldClusterId) {
+                        site_edits[site.SITE_ID] = {[field]: newValue.trim()};
+                        if (field === 'nano_cluster_id' && newValue.includes('_N')) {
+                            site_edits[site.SITE_ID]['big_cluster_id'] = newValue.split('_N')[0];
+                        }
+                        count++;
+                    }
+                });
+                
+                fetch('/autosave', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({site_edits: site_edits})
+                }).then(() => {
+                    alert(`Successfully renamed ${count} sites to ${newValue.trim()}`);
+                    refreshFromServer();
+                });
+            }
+        };
+
+        function drawSites() {
+            sitesLayer.clearLayers();
+            drawPaths();
+            
+            siteData.forEach(row => {
+                var color = getColor(row);
+                var marker = L.circleMarker([row.LATITUDE, row.LONGITUDE], {
+                    radius: 4, color: color, fillColor: color, fillOpacity: 0.6, weight: 1
+                });
+
+                if (pendingBulkSites !== null) {
+                    marker.on('click', function() {
+                        if (confirm(`Copy clusters from ${row.SITE_ID} (Nano: ${row.nano_cluster_id}) to all ${pendingBulkSites.length} selected sites?`)) {
+                            var site_edits = {};
+                            pendingBulkSites.forEach(sid => {
+                                site_edits[sid] = {
+                                    'ZONE': row.ZONE,
+                                    'big_cluster_id': row.big_cluster_id,
+                                    'nano_cluster_id': row.nano_cluster_id
+                                };
+                            });
+                            
+                            fetch('/autosave', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({site_edits: site_edits})
+                            }).then(() => {
+                                cancelBulkEdit();
+                                refreshFromServer();
+                            });
+                        }
+                    });
+                } else {
+                    var popupHtml = `<b>Site ID:</b> ${row.SITE_ID}<br>
+                                     <b>Name:</b> ${row.SITE_NAME}<br>
+                                     <b>Type:</b> ${row.SITE_TYPE}<br>
+                                     <b>Region:</b> ${row.REGION} <a href="#" onclick="editSite('${row.SITE_ID}', 'REGION', '${row.REGION}')">[Edit 1]</a><br>
+                                     <b>Zone:</b> ${row.ZONE} <a href="#" onclick="editSite('${row.SITE_ID}', 'ZONE', '${row.ZONE}')">[Edit 1]</a><br>
+                                     <b>Big Cluster:</b> ${row.big_cluster_id} <a href="#" onclick="editSite('${row.SITE_ID}', 'big_cluster_id', '${row.big_cluster_id}')">[Edit 1]</a> <a href="#" onclick="editEntireCluster('big_cluster_id', '${row.big_cluster_id}')">[Edit ALL]</a><br>
+                                     <b>Nano Cluster:</b> ${row.nano_cluster_id} <a href="#" onclick="editSite('${row.SITE_ID}', 'nano_cluster_id', '${row.nano_cluster_id}')">[Edit 1]</a> <a href="#" onclick="editEntireCluster('nano_cluster_id', '${row.nano_cluster_id}')">[Edit ALL]</a>`;
+                    marker.bindPopup(popupHtml);
+                }
+                
+                sitesLayer.addLayer(marker);
+            });
+        }
+
+        function drawPaths() {
+            pathsLayer.clearLayers();
+            
+            var pathsToDraw = pathMode === "big" ? bigPaths : nanoPaths;
+            
+            pathsToDraw.forEach(pathData => {
+                if (pathMode === "big") {
+                    pathData.points.sort((a,b) => a.big_seq_temp - b.big_seq_temp);
+                } else {
+                    pathData.points.sort((a,b) => a.nano_seq_num - b.nano_seq_num);
+                }
+                
+                var latlngs = pathData.points.map(p => [p.LATITUDE, p.LONGITUDE]);
+                
+                if ((pathMode === "big" && pathData.region && pathData.region.toUpperCase() === 'JABO') || pathMode === "nano") {
+                    var outWeight = pathMode === "big" ? 9 : 7;
+                    L.polyline(latlngs, {color: 'black', weight: outWeight, opacity: 0.9, pane: 'pathsPane'}).addTo(pathsLayer);
+                }
+                
+                var inWeight = pathMode === "big" ? 5 : 3;
+                L.polyline(latlngs, {color: pathData.color, weight: inWeight, opacity: 1.0, pane: 'pathsPane'}).addTo(pathsLayer);
+
+                pathData.points.forEach(p => {
+                    var seqNum = pathMode === "big" ? p.big_seq_temp : p.nano_seq_num;
+                    var label = pathMode === "big" ? p.big_cluster_id : p.nano_cluster_id;
+                    
+                    var iconHtml = `<div class="seq-icon" style="background: ${pathData.color};">${seqNum}</div>`;
+                    var icon = L.divIcon({className: '', html: iconHtml, iconSize: [22, 16], iconAnchor: [11, 8]});
+                    var marker = L.marker([p.LATITUDE, p.LONGITUDE], {icon: icon, pane: 'labelsPane'});
+                    
+                    marker.on('click', function(e) {
+                        if (pathMode === "big") {
+                            // Normal click: edit sequence number ONLY for this Big Cluster
+                            var newSeq = prompt(`Edit sequence for: ${label}\nCurrent: ${seqNum}`, seqNum);
+                            if (newSeq !== null && !isNaN(newSeq)) {
+                                autosaveAndRefresh({big_seq: {[label]: parseInt(newSeq)}});
+                            }
+                            
+                            // Shift+Click: edit Region and Zone
+                            if (e.originalEvent.shiftKey) {
+                                var currentRegion = pathData.region || "";
+                                var newRegion = prompt(`Change Region for: ${label}\nCurrent: ${currentRegion}`, currentRegion);
+                                
+                                if (newRegion !== null && newRegion.trim() !== "") {
+                                    newRegion = newRegion.trim().toUpperCase();
+                                    var currentZone = pathData.zone || "None";
+                                    var newZone = currentZone;
+                                    
+                                    if (newRegion === 'JABO') {
+                                        var zPrompt = prompt(`Change zone for: ${label}\n(West / East / South)\nCurrent: ${currentZone}`, currentZone);
+                                        if (zPrompt !== null && ['West', 'East', 'South'].includes(zPrompt.trim())) {
+                                            newZone = zPrompt.trim();
+                                        }
+                                    } else {
+                                        newZone = "None"; // Non-JABO has no zone
+                                    }
+                                    
+                                    if (newRegion !== currentRegion || newZone !== currentZone) {
+                                        var bid = p.big_cluster_id;
+                                        var site_edits = {};
+                                        siteData.forEach(s => {
+                                            if (s.big_cluster_id === bid) {
+                                                site_edits[s.SITE_ID] = {};
+                                                if (newRegion !== currentRegion) site_edits[s.SITE_ID].REGION = newRegion;
+                                                if (newZone !== currentZone) site_edits[s.SITE_ID].ZONE = newZone;
+                                            }
+                                        });
+                                        autosaveAndRefresh({site_edits: site_edits});
+                                    }
+                                }
+                            }
+                        } else {
+                            var newSeq = prompt(`Change sequence for ${label}\nCurrent: ${seqNum}`, seqNum);
+                            if (newSeq !== null && !isNaN(newSeq)) {
+                                autosaveAndRefresh({nano_seq: {[label]: parseInt(newSeq)}});
+                            }
+                        }
+                    });
+                    
+                    marker.bindTooltip(label);
+                    pathsLayer.addLayer(marker);
+                });
+            });
+        }
+
+        document.getElementById('toggleColorBtn').addEventListener('click', function() {
+            if (colorMode === "cluster") {
+                colorMode = "zone";
+                this.innerText = "Color: Zone";
+            } else if (colorMode === "zone") {
+                colorMode = "nano";
+                this.innerText = "Color: Nano Cluster";
+            } else {
+                colorMode = "cluster";
+                this.innerText = "Color: Big Cluster";
+            }
+            drawSites();
+        });
+
+        document.getElementById('togglePathBtn').addEventListener('click', function() {
+            if (pathMode === "big") {
+                pathMode = "nano";
+                this.innerText = "Path: Nano Sequence";
+            } else {
+                pathMode = "big";
+                this.innerText = "Path: Big Sequence";
+            }
+            drawPaths();
+        });
+
+        document.getElementById('exportBtn').addEventListener('click', function() {
+            this.innerText = "Exporting...";
+            document.getElementById('statusMsg').innerText = "Processing geometry, please wait...";
+            document.getElementById('statusMsg').style.color = "blue";
+            
+            var newBigSeqMap = {};
+            bigPaths.forEach(pathData => {
+                pathData.points.forEach(p => {
+                    newBigSeqMap[p.big_cluster_id] = p.big_seq_temp;
+                });
+            });
+            
+            var newNanoSeqMap = {};
+            nanoPaths.forEach(pathData => {
+                pathData.points.forEach(p => {
+                    newNanoSeqMap[p.nano_cluster_id] = p.nano_seq_num;
+                });
+            });
+
+            fetch('/export', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ big_seq: newBigSeqMap, nano_seq: newNanoSeqMap, site_edits: siteEdits })
+            })
+            .then(res => {
+                if(!res.ok) {
+                    return res.json().then(errData => { throw new Error(errData.msg || "Unknown Server Error"); });
+                }
+                return res.json();
+            })
+            .then(data => {
+                this.innerText = "Export Revised Data";
+                document.getElementById('statusMsg').style.color = "green";
+                document.getElementById('statusMsg').innerText = data.msg;
+                setTimeout(() => document.getElementById('statusMsg').innerText = "", 5000);
+            })
+            .catch(err => {
+                this.innerText = "Export Revised Data";
+                document.getElementById('statusMsg').style.color = "red";
+                document.getElementById('statusMsg').innerText = "Error: " + err.message;
+            });
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+# Data files
+*.csv
+*.xlsx
+*.pkl
+input.xlsx
+
+# Exports and Output
+Revised/
+Output/
+
+# Pyinstaller artifacts
+build/
+dist/
+*.spec
+*.zip
+*.exe
+
+# Python artifacts
+__pycache__/
+*.pyc
