@@ -5,6 +5,8 @@ This repository contains a full-stack Flask application and geospatial processin
 ## Overview
 The application handles raw geographical points (sites) and clusters them into high-level "Big Clusters" and localized "Nano Clusters" using a KMeans algorithm based on strict site-count constraints. 
 
+![Architecture Flowchart](Architecture_Flowchart.png)
+
 Once initialized, it serves an interactive web interface powered by Leaflet.js where users can:
 - Visually inspect Big Clusters and Nano Clusters.
 - Dynamically draw optimal paths (TSP approximations) linking cluster centers.

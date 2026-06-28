@@ -24,14 +24,7 @@ else:
     app = Flask(__name__)
     base_folder = os.getcwd()
 
-# Kept separate to allow normal clustering (no merging)
-pois = [
-    {"name": "Indosat KPPTI", "lat": -6.1818, "lon": 106.8223, "city": "JAKARTA PUSAT"},
-    {"name": "Semanggi", "lat": -6.2197, "lon": 106.8144, "city": "JAKARTA SELATAN"},
-    {"name": "Ciputra World", "lat": -6.2238, "lon": 106.8247, "city": "JAKARTA SELATAN"},
-    {"name": "Soekarno Hatta Airport", "lat": -6.1255, "lon": 106.6558, "city": "KOTA TANGERANG"},
-    {"name": "Ngurah Rai Airport", "lat": -8.7480, "lon": 115.1675, "city": "BADUNG"}
-]
+
 
 global_df = None
 zone_colors = {"West": "#3498db", "South": "#e67e22", "East": "#2ecc71"}
