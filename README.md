@@ -5,7 +5,38 @@ This repository contains a full-stack Flask application and geospatial processin
 ## Overview
 The application handles raw geographical points (sites) and clusters them into high-level "Big Clusters" and localized "Nano Clusters" using a KMeans algorithm based on strict site-count constraints. 
 
-![Architecture Flowchart](Architecture_Flowchart.png)
+```mermaid
+flowchart TD
+    %% Styling to match the dark theme
+    classDef default fill:#1e1e1e,stroke:#777,stroke-width:1px,color:#fff,font-family:sans-serif;
+    classDef decision fill:#1e1e1e,stroke:#777,stroke-width:1px,color:#fff,shape:hexagon;
+    
+    A[Load Site Data CSV] --> B[Initialize Clustering Engine]
+    B --> C[Recursive KMeans: Big Clusters]
+    
+    C --> D{Size <= 250 Sites?}
+    D -- No --> C
+    D -- Yes --> E[Recursive KMeans: Nano Clusters]
+    
+    E --> F{Size <= 35 Sites?}
+    F -- No --> E
+    F -- Yes --> G[Save to Master Dataframe]
+    
+    G --> H[Serve Interactive Web Map]
+    
+    H --> I{User Action}
+    
+    I -- "Edit Cluster / Sequence" --> J[Update Master Dataframe]
+    J --> K[Background Autosave to .pkl]
+    K --> H
+    
+    I -- "Click Export" --> L[Generate Seamless Voronoi Polygons]
+    L --> M[Merge Big & Nano Attributes]
+    M --> N[Export .tab and .xlsx Reports]
+    N --> H
+    
+    class D,F,I decision;
+```
 
 Once initialized, it serves an interactive web interface powered by Leaflet.js where users can:
 - Visually inspect Big Clusters and Nano Clusters.
