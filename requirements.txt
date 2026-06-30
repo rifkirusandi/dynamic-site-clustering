@@ -1,0 +1,9 @@
+flask
+pandas
+numpy
+geopandas
+scikit-learn
+shapely
+folium
+matplotlib
+branca
